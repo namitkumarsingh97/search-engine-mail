@@ -36,6 +36,7 @@ npm run build && npm start
 | `CORS_ORIGIN` | optional | Browser origins allowed to call this service (the main UI), comma separated. Default `http://localhost:3000`. |
 | `MAIL_DOMAIN` | optional | The part after `@`. Default `nexa.com`. |
 | `APP_URL` | optional | Main UI address, used for the link in the welcome mail. |
+| `MAIL_QUOTA_MB` | optional | Storage each person may use, in MB. Default 10. |
 | `SEND_LIMIT_PER_HOUR` | optional | Sends and draft saves per person per hour. Default 150. |
 | `PORT` | optional | Default 4200. |
 
@@ -47,6 +48,7 @@ All need `Authorization: Bearer <Nexa token>` except `/` and `/health`. Errors a
 | --- | --- | --- |
 | `GET` | `/health` | `200` when MongoDB is connected, `503` otherwise. |
 | `GET` | `/mailbox` | `{ name, handle, address }`. The first call also sets the mailbox up and delivers the welcome mail. |
+| `GET` | `/storage` | `{ used, limit, percent, full }` in bytes: the person's storage use. |
 | `GET` | `/folders` | Counts: `inbox`, `sent`, `draft`, `trash`, `starred` (`total`, `unread`). |
 | `GET` | `/messages?folder=&page=` | A page of messages (30). Folders: `inbox`, `sent`, `draft`, `trash`, `starred`. |
 | `GET` | `/messages/:id` | The full message. Opening it marks it read. |
@@ -59,7 +61,11 @@ All need `Authorization: Bearer <Nexa token>` except `/` and `/health`. Errors a
 | `GET` | `/contacts?q=` | Address suggestions (2+ characters, max 8). |
 | `GET` | `/search?q=&page=&pageSize=` | Search the person's own mail (not the trash). Marks matches with `\u0001` … `\u0002`. |
 
-Limits: subject 200 characters, body 20,000, at most 20 recipients, 150 sends per hour per person.
+Limits: subject 200 characters, body 20,000, at most 20 recipients, 150 sends per hour per person, **10 MB of storage per person**.
+
+## Storage limit
+
+Each person can hold 10 MB of mail (`MAIL_QUOTA_MB`). Everything they keep counts: inbox, sent, drafts and the trash (until it is emptied). A message counts for its subject, body and people plus a fixed 512 bytes. When a person is full, sending and saving drafts fail with HTTP 413 and a message telling them to delete old messages and empty the Trash. If a *recipient* is full the send is refused and names them; nothing is delivered to anyone and the sender keeps no copy. Reading, trashing and deleting always work, and the welcome mail is exempt.
 
 ## The welcome mail
 

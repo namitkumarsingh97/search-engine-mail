@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, HttpException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectModel } from "@nestjs/mongoose";
 import { randomUUID } from "crypto";
@@ -14,11 +14,17 @@ const MAX_BODY = 20_000;
 const MAX_RECIPIENTS = 20;
 const HOUR_MS = 60 * 60 * 1000;
 
+/** What one stored message counts for: its text, plus a fixed amount for the record around it. */
+const OVERHEAD_BYTES = 512;
+const sizeOf = (f: { subject: string; body: string; people: string }) =>
+  OVERHEAD_BYTES + Buffer.byteLength(f.subject) + Buffer.byteLength(f.body) + Buffer.byteLength(f.people);
+
 export const snippetOf = (body: string) => body.replace(/\s+/g, " ").trim().slice(0, 140);
 
 @Injectable()
 export class MailService {
   private readonly sendLimit: number;
+  private readonly quota: number;
 
   constructor(
     @InjectModel(MailItem.name) private readonly items: Model<MailItemDocument>,
@@ -27,6 +33,7 @@ export class MailService {
     @Inject(ConfigService) config: ConfigService,
   ) {
     this.sendLimit = config.get<AppConfig>("app")!.sendLimitPerHour;
+    this.quota = config.get<AppConfig>("app")!.quotaBytes;
   }
 
   // ---- How mail looks to the UI ------------------------------------------------------
@@ -65,6 +72,25 @@ export class MailService {
     if (!item) throw new NotFoundException("Message not found");
     return item;
   }
+
+  // ---- Storage ------------------------------------------------------------------------
+
+  /** Bytes used by each of these people (everything they hold, trash included). Same formula as `sizeOf`. */
+  private async usedBy(userIds: string[]): Promise<Map<string, number>> {
+    const bytes = (f: string) => ({ $strLenBytes: { $ifNull: [`$${f}`, ""] } });
+    const rows = await this.items.aggregate<{ _id: string; used: number }>([
+      { $match: { userId: { $in: userIds } } },
+      { $group: { _id: "$userId", used: { $sum: { $add: [OVERHEAD_BYTES, bytes("subject"), bytes("body"), bytes("people")] } } } },
+    ]);
+    return new Map(rows.map((r) => [r._id, r.used]));
+  }
+
+  async storage(userId: string) {
+    const used = (await this.usedBy([userId])).get(userId) ?? 0;
+    return { used, limit: this.quota, percent: Math.min(100, Math.round((used / this.quota) * 100)), full: used >= this.quota };
+  }
+
+  private mb = () => `${+(this.quota / 1024 / 1024).toFixed(1)} MB`;
 
   // ---- Reading ------------------------------------------------------------------------
 
@@ -174,12 +200,30 @@ export class MailService {
       sentAt: sending ? now : null,
     };
 
+    // Storage: your own copy must fit, and so must every recipient's. Nothing is written if one is full.
+    const size = sizeOf(fields);
+    const recipientIds = sending ? [...new Set([...to, ...cc].map((p) => p.userId!))] : [];
+    const used = await this.usedBy([userId, ...recipientIds]);
+    const myGrowth = size - (draft ? sizeOf(draft) : 0);
+    if (myGrowth > 0 && (used.get(userId) ?? 0) + myGrowth > this.quota) {
+      throw new HttpException(
+        `Your mailbox is full (${this.mb()} limit). Delete some old messages, then empty the Trash, to free up space.`,
+        413,
+      );
+    }
+    if (sending) {
+      const full = [...to, ...cc].filter((p) => p.userId !== userId && (used.get(p.userId!) ?? 0) + size > this.quota);
+      if (full.length > 0) {
+        const names = [...new Set(full.map((p) => this.address.addressOf(p.handle)))].join(", ");
+        throw new HttpException(`Not sent: the mailbox of ${names} is full, so the message can't be delivered.`, 413);
+      }
+    }
+
     const mine = draft ?? new this.items({ userId, read: true, starred: false });
     mine.set({ ...fields, folder: sending ? "sent" : "draft", read: true });
     await mine.save();
 
     if (sending) {
-      const recipientIds = [...new Set([...to, ...cc].map((p) => p.userId!))];
       await this.items.insertMany(
         recipientIds.map((rid) => ({ ...fields, userId: rid, folder: "inbox", read: false, starred: false })),
       );

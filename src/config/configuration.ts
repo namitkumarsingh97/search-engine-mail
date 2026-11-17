@@ -8,6 +8,8 @@ export interface AppConfig {
   domain: string;
   appUrl: string;
   sendLimitPerHour: number;
+  /** Mail storage each person may use, in bytes (default 10 MB). */
+  quotaBytes: number;
 }
 
 export default (): { app: AppConfig } => ({
@@ -22,6 +24,7 @@ export default (): { app: AppConfig } => ({
     domain: (process.env.MAIL_DOMAIN ?? "nexa.com").toLowerCase(),
     appUrl: (process.env.APP_URL ?? "").replace(/\/$/, ""),
     sendLimitPerHour: Number(process.env.SEND_LIMIT_PER_HOUR ?? 150),
+    quotaBytes: Math.round(Number(process.env.MAIL_QUOTA_MB ?? 10) * 1024 * 1024),
   },
 });
 

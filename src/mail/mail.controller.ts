@@ -24,6 +24,12 @@ export class MailController {
     return { name: me.name, handle: me.handle, address: this.address.addressOf(me.handle) };
   }
 
+  /** How much of the storage allowance is used. */
+  @Get("storage")
+  storage(@Req() req: AuthedRequest) {
+    return this.mail.storage(req.userId);
+  }
+
   @Get("folders")
   folders(@Req() req: AuthedRequest) {
     return this.mail.folders(req.userId);
